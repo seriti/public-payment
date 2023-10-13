@@ -14,6 +14,7 @@ $app->group('/admin', function () {
         //provider configuration sets the routes for notify and confirm urls
         $this->any('/provider', \App\Payment\ProviderController::class);
         $this->get('/setup_data', \App\Payment\SetupDataController::class);
+        $this->any('/setup', \App\Payment\SetupController::class);
         $this->any('/report', \App\Payment\ReportController::class);
     })->add(\App\Payment\Config::class);
 
@@ -26,13 +27,13 @@ $app->group('/payment', function () {
     $this->post('/notify/{source}/{provider}', \App\Payment\GatewayNotifyController::class);
 })->add(\App\Payment\ConfigPayment::class);
 
+
 //for incorporatimg into public-shop or pubic-auction modules within public-website module 
 //*** BEGIN public access ***
 $app->group('/public', function () {
  
     //for processing confirm url from payment gateway service provider
     $this->post('/payment/confirm/{source}/{provider}', \App\Payment\GatewayConfirmController::class);
-
     
     
 })->add(\App\Website\ConfigPublic::class);

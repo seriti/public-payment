@@ -46,6 +46,7 @@ class GatewayNotifyController
 
         switch($args['source']) {
             case 'shop': $source = 'SHOP'; break;
+            case 'auction': $source = 'AUCTION'; break;
             default: $source = 'UNKNOWN';
         }
 
@@ -56,6 +57,7 @@ class GatewayNotifyController
 
         switch($args['provider']) {
             case 'dpo': $provider_code = 'DPO_PAYGATE'; break;
+            case 'payfast': $provider_code = 'DPO_PAYFAST'; break;
             default: $provider_code = 'UNKNOWN';
         }
 
@@ -80,7 +82,7 @@ class GatewayNotifyController
         }
 
 
-        //response for non human consumption
+        //NB: Response for NON HUMAN consumption
         return $response->write($text);
         
     }

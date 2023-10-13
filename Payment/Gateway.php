@@ -2,6 +2,7 @@
 namespace App\Payment;
 
 use Exception;
+use Seriti\Tools\Crypt;
 use Seriti\Tools\Date;
 use Seriti\Tools\Form;
 use Seriti\Tools\Validate;
@@ -39,8 +40,10 @@ class Gateway {
     protected $country = 'ZAF';
     protected $currency = 'ZAR';
     protected $merchant_id = '';
+    protected $merchant_key = '';
     protected $return_url = '';
     protected $notify_url = '';
+    protected $cancel_url = '';
 
     protected $user_id;
     protected $provider;
@@ -73,9 +76,28 @@ class Gateway {
             throw new Exception('PAYMENT_GATEWAY_ERROR: Provider ID not valid');
             exit;
         } else {
-            $this->merchant_id = $this->provider['config']['merchant_id'];
-            $this->return_url = $this->provider['config']['return_url'];
+            //required parameters, constants take precedence
+            if(isset($this->provider['config']['merchant_id'])) {
+                $this->merchant_id = $this->provider['config']['merchant_id'];
+            } else {
+                throw new Exception('PAYMENT_GATEWAY_ERROR: '.$this->provider['code'].' merchant_id not specified!'); 
+            }
+            
+            if(isset($this->provider['config']['key'])) {
+                $this->merchant_key = $this->provider['config']['key'];
+            } else {
+                throw new Exception('PAYMENT_GATEWAY_ERROR: '.$this->provider['code'].' merchant key not specified!');  
+            }
+            
+            if(isset($this->provider['config']['return_url'])) {
+                $this->return_url = $this->provider['config']['return_url'];   
+            } else {
+                throw new Exception('PAYMENT_GATEWAY_ERROR: '.$this->provider['code'].' merchant return url not specified!'); 
+            }
+                        
+            //optional additional parameters
             if(isset($this->provider['config']['notify_url'])) $this->notify_url = $this->provider['config']['notify_url'];
+            if(isset($this->provider['config']['cancel_url'])) $this->cancel_url = $this->provider['config']['cancel_url'];
             if(isset($this->provider['config']['locale'])) $this->locale = $this->provider['config']['locale'];
             if(isset($this->provider['config']['country'])) $this->country = $this->provider['config']['country'];
             if(isset($this->provider['config']['currency'])) $this->currency = $this->provider['config']['currency'];
@@ -109,20 +131,21 @@ class Gateway {
         $error = '';
         $error_tmp = '';
         $comment = '';
-        $response = '';;
+        $html = '';
+
         $transaction_status = 'FAILURE';
         $update_transaction = false;
+        
+        //NB: if NOTIFY_URL set this is called before RETURN_URL so transaction may have been confirmed already 
 
         if($this->provider['code'] === 'DPO_PAYGATE') {
-            $key = $this->provider['config']['key'];
-            
             $provider_ref = Secure::clean('basic',$data['PAY_REQUEST_ID']);
             $provider_status = Secure::clean('basic',$data['TRANSACTION_STATUS']);
             $checksum = Secure::clean('basic',$data['CHECKSUM']);
 
             $transaction = $this->getTransaction('PROVIDER',$provider_ref,$error);
 
-            //NB: if NOTIFY_URL set this is called before RETURN_URL so transaction may have been confirmed already 
+            
             if($error === '') {
                 $check = [];
                 $check[] = $this->merchant_id;
@@ -130,7 +153,7 @@ class Gateway {
                 $check[] = $provider_status;
                 $check[] = $transaction['reference'];
 
-                $checksum_test = md5(implode('',$check).$key);
+                $checksum_test = md5(implode('',$check).$this->merchant_key);
                 if($checksum_test !== $checksum) {
                     $error .= 'Payment gateway confirmation checksum invalid';
                     if($this->debug) $error .= 'data='.json_encode($data).' check='.json_encode($check).' md5='.$checksum_test;
@@ -141,6 +164,61 @@ class Gateway {
 
                     if($transaction_status !== $transaction['status']) $update_transaction = true;    
                 }
+            }
+        }
+
+        if($this->provider['code'] === 'DPO_PAYFAST') {
+
+            /*
+            $ITN_Payload = [
+             'm_payment_id' => 'SuperUnique1',
+             'pf_payment_id' => '1089250',
+             'payment_status' => 'COMPLETE', //CANCELLED
+             'item_name' => 'test+product',
+             'item_description' => ,
+             'amount_gross' => 200.00,
+             'amount_fee' => -4.60,
+             'amount_net' => 195.40,
+             'custom_str1' => ,
+             'custom_str2' => ,
+             'custom_str3' => ,
+             'custom_str4' => ,
+             'custom_str5' => ,
+             'custom_int1' => ,
+             'custom_int2' => ,
+             'custom_int3' => ,
+             'custom_int4' => ,
+             'custom_int5' => ,
+             'name_first' => ,
+             'name_last' => ,
+             'email_address' => ,
+             'merchant_id' => '10012577',
+             'signature' => 'ad8e7685c9522c24365d7ccea8cb3db7'
+            ]; 
+            */
+
+
+            $transaction_id = Secure::clean('integer',$data['custom_int1']);
+            $provider_ref = Secure::clean('basic',$data['pf_payment_id']);
+            $provider_status = Secure::clean('basic',$data['payment_status']);
+            $checksum = Secure::clean('basic',$data['signature']);
+            $signature = Secure::clean('basic',$data['signature']);
+
+            $transaction = $this->getTransaction('ID',$transaction_id,$error_tmp);
+            if($error_tmp !== '') $error .= 'Could not find transaction record! ';
+
+            $signature_check = $this->getSignature('CONFIRM',$data);
+            if($signature_check !== $signature) {
+                $error .= 'Signature check failed! ';
+                if($this->debug) $error .= 'data='.json_encode($data).' signature='.json_encode($signature).' check='.$signature_check;
+            }    
+
+
+            if($error === '') {
+                //convert provider status to internal status
+                $transaction_status = $this->getStatus($provider_status,$comment); 
+                $comment = 'DPO payfast: '.$comment.' ref['.$provider_ref.'] ';
+                if($transaction_status !== $transaction['status']) $update_transaction = true;  
             }
         }
 
@@ -157,20 +235,27 @@ class Gateway {
             
 
             if($update_transaction) {
-                $this->updateTransaction($transaction,$transaction_status,$comment,$data,$error_tmp);
+                $this->updateTransaction($transaction,$provider_ref,$transaction_status,$comment,$data,$error_tmp);
                 if($error_tmp !== '') {
-                    $error .= 'WE could not update your order details, please contact us. ';
+                    $error .= 'WE could not update your payment details, please contact us. ';
                     if($this->debug) $error .= $error_tmp;
                 }    
             }
                 
         }
 
-        if($error !== '') $this->addError($error);
+        if($error !== '') {
+            $this->addError($error);
+            $html .= $this->system->getDefault('PAYMENT_FAILURE_HTML','');
+        } else {
+            $html .= $this->system->getDefault('PAYMENT_SUCCESS_HTML','');
+        }
+
+        return $html;    
         
     }
 
-    //NB: this produces plain text output to calling gateway.
+    //NB: this produces plain text output to calling gateway. have not added DPO_PAYFAST provider yet!
     protected function notifyPayment($data)
     {
         $gateway_response = '';
@@ -181,8 +266,6 @@ class Gateway {
         $update_transaction = false;
 
         if($this->provider['code'] === 'DPO_PAYGATE') {
-            $key = $this->provider['config']['key'];
-            
             $provider_ref = Secure::clean('basic',$data['PAY_REQUEST_ID']);
             $provider_status = Secure::clean('basic',$data['TRANSACTION_STATUS']);
             $checksum = Secure::clean('basic',$data['CHECKSUM']);
@@ -216,7 +299,7 @@ class Gateway {
                     $check[] = $data['PAYVAULT_DATA_2'];
                 }    
                 
-                $checksum_test = md5(implode('',$check).$key);
+                $checksum_test = md5(implode('',$check).$this->merchant_key);
                 if($checksum_test !== $checksum) {
                     $gateway_response = 'ERROR';
                     $transaction_status = 'ERROR';
@@ -235,7 +318,7 @@ class Gateway {
 
         if($error === '') {
             if($update_transaction) {
-                $this->updateTransaction($transaction,$transaction_status,$comment,$data,$error_tmp);
+                $this->updateTransaction($transaction,$provider_ref,$transaction_status,$comment,$data,$error_tmp);
                 if($error_tmp !== '') $error .= 'Notify payment: Could not update order details:'.$error_tmp;
             }
         } 
@@ -271,6 +354,14 @@ class Gateway {
             if($provider_code == 3 or $provider_code == 4) $status = 'CANCELLED';
 
             $comment = $arr[$provider_code];
+        }
+
+        if($this->provider['code'] === 'DPO_PAYFAST') {
+            if($provider_code === 'COMPLETE') {
+                $status = 'SUCCESS';
+            } else {
+                $status = 'ERROR';
+            }
         }
 
 
@@ -325,20 +416,7 @@ class Gateway {
     {
         $error = '';
         $error_tmp = '';
-        $key = '';
-
-        //encryption key set in the Merchant Access Portal and specfied in provider config json
-        if(defined('MERCHANT_KEY')) {
-            $key = MERCHANT_KEY;    
-        } else {
-            $key = $this->provider['config']['key'];
-        }
-
-        if($key === '') {
-            throw new Exception('PAYMENT_GATEWAY_ERROR: DPO Paygate merchant key not specified!');
-            exit;
-        }    
-        
+                    
         //NB: expects amount in cents
         $data = array(
             'PAYGATE_ID'        => $this->merchant_id,
@@ -358,7 +436,7 @@ class Gateway {
             $this->container->logger->addInfo('Payment initialise:',$data);
         }
 
-        $checksum = md5(implode('',$data).$key);
+        $checksum = md5(implode('',$data).$this->merchant_key);
 
         $data['CHECKSUM'] = $checksum;
 
@@ -384,7 +462,7 @@ class Gateway {
 
         if($error_tmp !== '') {
             $error .= 'Could not call Payment gateway.';
-            if($this->debug) $error .= ': '.$error_temp;
+            if($this->debug) $error .= ': '.$error_tmp;
         } else {
             parse_str($result_str,$result_arr);
 
@@ -394,7 +472,7 @@ class Gateway {
             $output['PAY_REQUEST_ID'] = $result_arr['PAY_REQUEST_ID'];
             $output['REFERENCE'] = $result_arr['REFERENCE'];
 
-            $checksum_test = md5(implode('',$output).$key);
+            $checksum_test = md5(implode('',$output).$this->merchant_key);
             if($checksum_test !== $checksum) {
                 $error .= 'Payment gateway initialise values checksum invalid';
                 if($this->debug) $error .= 'gateway['.$checksum.'] calculated['.$checksum_test.'] '.$result_str;
@@ -414,6 +492,78 @@ class Gateway {
         }
 
         if($error === '') return $output; else return false; 
+    } 
+
+    //not complete yet!!!
+    protected function initialiseDpoPayfast($reference,$reference_id,$amount,$email,&$error)
+    {
+        $error = '';
+        $error_tmp = '';
+              
+        //NB: expects amount in RAND
+        //item_name, m_payment_id, email_address fields MAX 100 Char
+        //https://developers.payfast.co.za/docs#step_1_form_fields for other optional fields
+        $data = [
+            'merchant_id'        => $this->merchant_id,
+            'merchant_key'       => $this->merchant_key,
+            'return_url'         => $this->return_url,
+            'item_name'          => $reference,
+            'm_payment_id'       => $reference_id,   
+            'amount'             => $amount,
+        ];
+
+        if($email !== '') $data['email_address'] = $email;
+        if($this->notify_url !== '') $data['notify_url'] = $this->notify_url;
+        if($this->cancel_url !== '') $data['cancel_url'] = $this->cancel_url;
+
+        //Save transaction to get unique transaction id
+        //Payfast only returns ref after confirm/notify. 
+        $provider_ref = 'TEMP:'.Crypt::makeToken(); 
+        $transaction_id = $this->saveTransaction($provider_ref,$reference,$reference_id,$amount,$email,$error_tmp);
+        if($error_tmp !== '') {
+            $error .= 'Could not save transaction for DPO payfast!';
+        } else {
+            $data['custom_int1'] = $transaction_id;
+        }
+
+        //NB: must come after all other values set
+        $data['signature'] = $this->getSignature('FORM',$data);
+        
+        if($this->debug_log) {
+            $this->container->logger->addInfo('Payment initialise:',$data);
+        }
+
+        if($error === '') return $data; else return false; 
+    }
+
+    protected function getSignature($type,$data = []) 
+    {
+        $sig = '';
+
+        if($this->provider['code'] === 'DPO_PAYFAST') {
+            if($type === 'FORM') {
+                foreach($data as $key=>$val) {
+                    if($val !== '') $sig .= $key.'='.urlencode(trim($val)).'&';
+                }  
+                $sig = substr($sig,0,-1);  
+            } 
+
+            if($type === 'CONFIRM') {
+                foreach($data as $key=>$val) {
+                    if($key !== 'signature') $sig .= $key.'='.urlencode(trim($val)).'&';
+                }    
+                $sig = substr($sig,0,-1);
+            }
+
+            if(isset($this->provider['config']['password'])) {
+                $sig .= '&passphrase='. urlencode(trim($this->provider['config']['password']));
+            }
+            
+            $sig = md5($sig);
+        }
+        
+        
+        return $sig;
     }    
 
     protected function getTransaction($id_type,$id,&$error)
@@ -426,12 +576,17 @@ class Gateway {
 
         if($id_type === 'ID') $sql .= 'transaction_id = "'.$this->db->escapeSql($id).'" ';
         if($id_type === 'PROVIDER') $sql .= 'provider_ref = "'.$this->db->escapeSql($id).'" ';
+        
+        //NB: *** Be very careful using these as with failed transactions and no house keeping multiple matching records possible ***
         if($id_type === 'BUYER_REF') $sql .= 'reference = "'.$this->db->escapeSql($id).'" ';
+        if($id_type === 'SOURCE_ID') $sql .= 'source = "'.$this->db->escapeSql($this->source).'" AND source_id = "'.$this->db->escapeSql($id).'" ';
+        //this will get most recent record if multiple matches
+        $sql .= 'ORDER BY transaction_id DESC LIMIT 1';
                      
         $transaction = $this->db->readSqlRecord($sql);
         if($transaction == 0) {
             $error .= 'Could not identify payment gateway transaction.';
-            if($this->debug) $error .= 'Provider ID['.$this->provider['provider_id'].'] & '.$id_type.' ref['.$id.']';
+            if($this->debug) $error .= 'Provider ID['.$this->provider['provider_id'].'] & '.$id_type.' ref['.$id.'] sql['.$sql.']';
         }
 
         return $transaction;
@@ -456,17 +611,17 @@ class Gateway {
         $data['date'] = date('Y-m-d H:i:s');
         $data['status'] = 'NEW';
 
-        $this->db->insertRecord($table_transact,$data,$error_tmp);
+        $transaction_id = $this->db->insertRecord($table_transact,$data,$error_tmp);
         if($error_tmp !== '') {
             $error .= 'Could not save provider transaction';
             if($this->debug) $error .= ': '.$error_tmp;
         }
         
-        if($error === '') return true; else return false;    
+        if($error === '') return $transaction_id; else return false;    
     }
 
     //Update after payment provider has confirmed or notified a transaction
-    protected function updateTransaction($transaction,$status,$comment,$response = [],&$error)
+    protected function updateTransaction($transaction,$provider_ref,$status,$comment,$response = [],&$error)
     {
         $error = '';
         $error_tmp = '';
@@ -482,6 +637,11 @@ class Gateway {
                 $transaction['status'] = $status;
             }    
         } 
+
+        //for cases where provider reference is only provided after confirm/notify
+        if($provider_ref !== '' and substr($transaction['provider_ref'],0,4) === 'TEMP') {
+            $update['provider_ref'] = $provider_ref;
+        }
 
         if($comment != '') {
             if($comment !== $transaction['comment']) $update['comment'] = $transaction['comment'].$comment;
@@ -516,10 +676,20 @@ class Gateway {
 
             $order_id = $transaction['source_id'];
             $amount = $transaction['amount'];
-            $comment = '';
-            \App\Shop\Helpers::paymentGatewayOrderUpdate($this->db,$module['table_prefix'],$order_id,$amount,$comment,$error_tmp);
+            \App\Shop\Helpers::paymentGatewayOrderUpdate($this->db,$module['table_prefix'],$order_id,$amount,$error_tmp);
             if($error_tmp !== '') {
-                $error .= 'Could not update shop order with paymemyt details';
+                $error .= 'Could not update shop order with payment details';
+            }
+        }
+
+        if($transaction['source']  === 'AUCTION') {
+            $module = $this->container->config->get('module','auction');
+
+            $invoice_id = $transaction['source_id'];
+            $amount = $transaction['amount'];
+            \App\Auction\Helpers::paymentGatewayInvoiceUpdate($this->db,$module['table_prefix'],$invoice_id,$amount,$error_tmp);
+            if($error_tmp !== '') {
+                $error .= 'Could not update auction invoice with payment details';
             }
         }
 
@@ -543,14 +713,29 @@ class Gateway {
             }
             
             if($error === '' ) {
-                $checksum =
-
                 $button_text = 'Proceed to DPO PAYGATE payment gateway';
                 $html .= '<form action="https://secure.paygate.co.za/payweb3/process.trans" method="POST" >
                              <input type="hidden" name="PAY_REQUEST_ID" value="'.$initialise['PAY_REQUEST_ID'].'">
                              <input type="hidden" name="CHECKSUM" value="'.$initialise['CHECKSUM'].'">
                              <input type="submit" name="Submit" value="'.$button_text.'" class="btn btn-primary">
                          </form>';
+            }
+
+        } 
+
+        if($this->provider['code'] === 'DPO_PAYFAST') {
+            //NB: transaction saved in initialiase so that have unique reference to it as Payfast only returns ref after confirm/notify. 
+            $form_data = $this->initialiseDpoPayfast($reference,$reference_id,$amount,$email,$error);
+                        
+            if($error === '' ) {
+                $button_text = 'Proceed to DPO PAYFAST payment gateway';
+                $url = 'https://sandbox.payfast.co.za/eng/process'; //TESTING = https://sandbox.payfast.co.za/eng/process, PRODUCTION = https://www.payfast.co.za/eng/process
+                $html .= '<form action="'.$url.'" method="post">';
+                foreach($form_data as $key => $value) {
+                    $html .= '<input name="'.$key.'" type="hidden" value=\''.$value.'\' />';
+                }
+                $html .= '<input type="submit" name="Submit" value="'.$button_text.'" class="btn btn-primary">';
+                $html .= '</form>'; 
             }
 
         }  

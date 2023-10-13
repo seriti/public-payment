@@ -11,7 +11,7 @@ NB: 'debug_log'=>true means that call and responses to payment service providers
 $container['config']->set('module','payment',['name'=>'Payment manager',
                                             'route_root'=>'admin/payment/',
                                             'route_list'=>['dashboard'=>'Dashboard','transaction'=>'Transactions',
-                                                           'provider'=>'Payment providers','report'=>'Reports'],
+                                                           'provider'=>'Payment providers','setup'=>'Setup','report'=>'Reports'],
                                             'labels'=>['payment'=>'Payment','type'=>'Type','order'=>'Order'],
                                             'location_base'=>'PMT',
                                             'debug_log'=>true,

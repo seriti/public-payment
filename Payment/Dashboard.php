@@ -15,8 +15,8 @@ class Dashboard extends DashboardTool
         $login_user = $this->getContainer('user'); 
 
         //(block_id,col,row,title)
-        $this->addBlock('ADD',1,1,'Capture data');
-        $this->addItem('ADD','Add a new Payment',['link'=>"payment?mode=add"]);
+        //$this->addBlock('ADD',1,1,'Capture data');
+        //$this->addItem('ADD','Add a new Payment',['link'=>"payment?mode=add"]);
         
         
         if($login_user->getAccessLevel() === 'GOD') {

@@ -35,6 +35,7 @@ class GatewayConfirmController
 
         switch($args['source']) {
             case 'shop': $source = 'SHOP'; break;
+            case 'auction': $source = 'AUCTION'; break;
             default: $source = 'UNKNOWN';
         }
 
@@ -45,6 +46,7 @@ class GatewayConfirmController
 
         switch($args['provider']) {
             case 'dpo': $provider_code = 'DPO_PAYGATE'; break;
+            case 'payfast': $provider_code = 'DPO_PAYFAST'; break;
             default: $provider_code = 'UNKNOWN';
         }
 
